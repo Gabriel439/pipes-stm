@@ -1,0 +1,21 @@
+name:                async-pipes
+version:             0.1.0.0
+synopsis:            Run Proxies asynchronously.
+description:         
+
+license:             BSD3
+license-file:        LICENSE
+author:              
+maintainer:          
+
+category:            Development
+build-type:          Simple
+cabal-version:       >=1.8
+
+library
+
+  exposed-modules:     Control.Proxy.TQueue
+  build-depends:       base             ==4.5.*,
+                       pipes            ==3.1.*,
+                       pipes-safe       ==1.0.*,
+                       stm              ==2.4.*
