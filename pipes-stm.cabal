@@ -1,4 +1,4 @@
-name:                async-pipes
+name:                pipes-stm
 version:             0.1.0.0
 synopsis:            Run Proxies asynchronously.
 description:         
