@@ -1,11 +1,17 @@
+-- | Actor-style communication between concurrent pipelines
+
 {-# LANGUAGE PolymorphicComponents #-}
 
-module Control.Proxy.STM
-    ( Process(..)
-    , sendD
-    , spawnBounded
-    , spawnUnbounded
-    , spawnSingle
+module Control.Proxy.STM (
+    -- * Common API
+    Process(..),
+    Mailbox(..),
+    sendD,
+
+    -- * Implementations
+    spawnBounded,
+    spawnUnbounded,
+    spawnSingle
     ) where
 
 import Control.Applicative ((<|>), (<*), pure)
@@ -66,7 +72,8 @@ sourceWith read rDn () = P.runIdentityP go
                 P.respond a
                 go
 
-{-| Spawn a 'Mailbox' and 'Process' that communicate using a 'TBQueue'
+{-| Spawn an associated 'Mailbox' and 'Process' that communicate using a
+    'TBQueue'
 
     The 'Int' parameter specifies the size of the 'TBQueue'
 -}
@@ -75,13 +82,16 @@ spawnBounded n = spawnWith $ do
     q <- S.newTBQueueIO n
     return (S.readTBQueue q, S.writeTBQueue q)
 
--- | Spawn a 'Mailbox' and 'Process' that communicate using a 'TQueue'
+{-| Spawn an associated 'Mailbox' and 'Process' that communicate using a
+    'TQueue'
+-}
 spawnUnbounded :: IO (Mailbox a, Process a)
 spawnUnbounded = spawnWith $ do
     q <- S.newTQueueIO
     return (S.readTQueue q, S.writeTQueue q)
 
--- | Spawn a 'Mailbox' and 'Process' that communicate using a 'TMVar'
+{-| Spawn an associated 'Mailbox' and 'Process' that communicate using a 'TMVar'
+-}
 spawnSingle :: IO (Mailbox a, Process a)
 spawnSingle = spawnWith $ do
     m <- S.newEmptyTMVarIO
