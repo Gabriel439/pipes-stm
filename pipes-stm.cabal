@@ -14,7 +14,7 @@ cabal-version:       >=1.8
 
 library
 
-  exposed-modules:     Control.Proxy.TQueue
+  exposed-modules:     Control.Proxy.STM
   build-depends:       base             ==4.5.*,
                        pipes            ==3.1.*,
                        pipes-safe       ==1.0.*,
