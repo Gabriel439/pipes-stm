@@ -1,6 +1,10 @@
 -- | Asynchronous communication between proxies
 
+{-# LANGUAGE CPP #-}
+
+#if __GLASGOW_HASKELL__ >= 702
 {-# LANGUAGE Trustworthy #-}
+#endif
 {- 'unsafeIOToSTM' requires the Trustworthy annotation.
 
     I use 'unsafeIOToSTM' to touch an IORef to mark it as still alive. This
@@ -77,8 +81,7 @@ spawn buffer = spawnWith $ case buffer of
                 return ma
         return (read, S.putTMVar m)
 
-spawnWith
-    :: IO (S.STM (Maybe a), Maybe a -> S.STM ()) -> IO (Input a, Output a)
+spawnWith :: IO (S.STM (Maybe a), Maybe a -> S.STM ()) -> IO (Input a, Output a)
 spawnWith create = do
     (read, write) <- create
 
