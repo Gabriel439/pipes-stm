@@ -1,4 +1,25 @@
--- | Asynchronous communication between concurrent pipelines
+-- | Asynchronous communication between proxies
+
+{-# LANGUAGE Trustworthy #-}
+{- 'unsafeIOToSTM' requires the Trustworthy annotation.
+
+    I use 'unsafeIOToSTM' to touch an IORef to mark it as still alive. This
+    action satisfies the necessary safety requirements because:
+
+    * You can safely repeat it if the transaction rolls back
+
+    * It does not acquire any resources
+
+    * It does not leak any inconsistent view of memory to the outside world
+
+    It appears to be unnecessary to read the IORef to keep it from being garbage
+    collected, but I wanted to be absolutely certain since I cannot be sure that
+    GHC won't optimize away the reference to the IORef.
+
+    The other alternative was to make 'send' and 'recv' use the 'IO' monad
+    instead of 'STM', but I felt that it was important to preserve the ability
+    to combine them into larger transactions.
+-}
 
 module Control.Proxy.STM (
     -- * Spawn Inputs and Outputs
@@ -13,7 +34,7 @@ module Control.Proxy.STM (
 
     -- * Proxy utilities
     sendD,
-    runS
+    recvS
     ) where
 
 import Control.Applicative ((<|>), (<*), pure)
@@ -21,6 +42,7 @@ import Control.Monad.Trans.Class (lift)
 import qualified Control.Concurrent.STM as S
 import qualified Control.Proxy as P
 import Data.IORef (newIORef, readIORef, mkWeakIORef, IORef)
+import GHC.Conc.Sync (unsafeIOToSTM)
 
 {-| Spawn an 'Input' \/ 'Output' pair that communicate using the specified
     'Buffer'
@@ -59,11 +81,28 @@ spawnWith
     :: IO (S.STM (Maybe a), Maybe a -> S.STM ()) -> IO (Input a, Output a)
 spawnWith create = do
     (read, write) <- create
-    rUp  <- newIORef ()  -- Keep track of whether upstream pipes are still live
-    rDn  <- newIORef ()  -- Keep track of whether the downstream pipe is live
-    done <- S.newTVarIO False
+
+    {- Use an IORef to keep track of whether the 'Input' end has been garbage
+       collected and run a finalizer when the collection occurs
+
+       The finalizer cannot anticipate how many listeners there are, so it only
+       writes a single 'Nothing' and trusts that the supplied 'read' action
+       will not consume the 'Nothing'.
+
+       The 'write' must be protected with the "pure ()" fallback so that it does
+       not trigger an IndefinitelyBlockedOnSTM exception if the 'Output' end has
+       also been garbage collected.
+    -}
+    rUp  <- newIORef ()
     mkWeakIORef rUp (S.atomically $ write Nothing <|> pure ())
+
+    {- Use an IORef to keep track of whether the 'Output' end has been garbage
+       collected and run a finalizer when the collection occurs
+    -}
+    rDn  <- newIORef ()
+    done <- S.newTVarIO False
     mkWeakIORef rDn (S.atomically $ S.writeTVar done True)
+
     let quit = do
             b <- S.readTVar done
             S.check b
@@ -71,8 +110,12 @@ spawnWith create = do
         continue a = do
             write (Just a)
             return True
-        _send a = S.atomically (quit <|> continue a) <* readIORef rUp
-        _recv = S.atomically read <* readIORef rDn
+        {- The '_send' action aborts if the 'Output' has been garbage collected,
+           since there is no point wasting memory if nothing can empty the
+           'Buffer'.  This protects against careless users not checking send's
+           return value, especially if they use an 'Unbounded' buffer. -}
+        _send a = (quit <|> continue a) <* unsafeIOToSTM (readIORef rUp)
+        _recv = read <* unsafeIOToSTM (readIORef rDn)
     return (Input _send , Output _recv)
 
 {-| 'Buffer' specifies how many messages to buffer between the 'Input' and
@@ -88,21 +131,29 @@ data Buffer
 
 -- | Receives messages for the associated 'Output'
 newtype Input a = Input {
-    {-| Send a message to the 'Input' end, blocking if the 'Buffer' is full
+    {-| Send a message to the 'Input' end
 
-        Returns 'False' if the associated 'Output' is garbage collected, 'True'
-        otherwise
+        * Retries if the 'Buffer' is full and the associated 'Output' is not
+          garbage collected.
+
+        * Succeeds and returns 'True' if the 'Buffer' is not full.
+
+        * Fails and returns 'False' if the 'Output' is garbage collected.
     -}
-    send :: a -> IO Bool }
+    send :: a -> S.STM Bool }
 
 -- | Produces all messages sent to the associated 'Input'
 newtype Output a = Output {
-    {-| Receive a message from the 'Output' end, blocking while the 'Buffer' is
-        empty
+    {-| Receive a message from the 'Output' end
 
-        Returns 'Nothing' if the 'Input' end has been garbage collected
+        * Retries if the 'Buffer' is empty and the associated 'Input' is not
+          garbage collected.
+
+        * Succeeds and returns a 'Just' if the 'Buffer' is not empty.
+
+        * Fails and returns 'Nothing' if the 'Input' is garbage collected.
     -}
-    recv :: IO (Maybe a) }
+    recv :: S.STM (Maybe a) }
 
 {-| Writes all messages flowing \'@D@\'ownstream to the given 'Input'
 
@@ -113,7 +164,7 @@ sendD mailbox = P.runIdentityK loop
   where
     loop x = do
         a <- P.request x
-        alive <- lift $ send mailbox a
+        alive <- lift $ S.atomically $ send mailbox a
         if alive
             then do
                 x2 <- P.respond a
@@ -122,13 +173,13 @@ sendD mailbox = P.runIdentityK loop
 
 {-| Convert an 'Output' to a 'P.Producer'
 
-    'runS' terminates when the corresponding 'Input' is garbage collected.
+    'recvS' terminates when the corresponding 'Input' is garbage collected.
 -}
-runS :: (P.Proxy p) => Output a -> () -> P.Producer p a IO ()
-runS process () = P.runIdentityP go
+recvS :: (P.Proxy p) => Output a -> () -> P.Producer p a IO ()
+recvS process () = P.runIdentityP go
   where
     go = do
-        ma <- lift $ recv process
+        ma <- lift $ S.atomically $ recv process
         case ma of
             Nothing -> return ()
             Just a  -> do
