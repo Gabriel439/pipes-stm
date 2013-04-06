@@ -89,9 +89,9 @@ spawnWith create = do
        writes a single 'Nothing' and trusts that the supplied 'read' action
        will not consume the 'Nothing'.
 
-       The 'write' must be protected with the "pure ()" fallback so that it does
-       not trigger an IndefinitelyBlockedOnSTM exception if the 'Output' end has
-       also been garbage collected.
+       The 'write' must be protected with the @pure ()@ fallback so that it does
+       not trigger an 'IndefinitelyBlockedOnSTM' exception if the 'Output' end
+       has also been garbage collected.
     -}
     rUp  <- newIORef ()
     mkWeakIORef rUp (S.atomically $ write Nothing <|> pure ())
@@ -112,8 +112,14 @@ spawnWith create = do
             return True
         {- The '_send' action aborts if the 'Output' has been garbage collected,
            since there is no point wasting memory if nothing can empty the
-           'Buffer'.  This protects against careless users not checking send's
-           return value, especially if they use an 'Unbounded' buffer. -}
+           'Buffer'. This protects against careless users not checking send's
+           return value, especially if they use an 'Unbounded' buffer.
+
+           The '_send' action prevents 'rUp' from being garbage collected, thus
+           delaying the 'Input' finalization until no more references to
+           '_send' are available. The '_recv' action, 'rDn' and 'Output' are
+           related in the same way.
+        -}
         _send a = (quit <|> continue a) <* unsafeIOToSTM (readIORef rUp)
         _recv = read <* unsafeIOToSTM (readIORef rDn)
     return (Input _send , Output _recv)
@@ -133,12 +139,12 @@ data Buffer
 newtype Input a = Input {
     {-| Send a message to the 'Input' end
 
-        * Retries if the 'Buffer' is full and the associated 'Output' is not
-          garbage collected.
+        * Retries if the 'Buffer' is full and the associated 'Output' hasn't
+          been garbage collected.
 
         * Succeeds and returns 'True' if the 'Buffer' is not full.
 
-        * Fails and returns 'False' if the 'Output' is garbage collected.
+        * Fails and returns 'False' if the 'Output' has been garbage collected.
     -}
     send :: a -> S.STM Bool }
 
@@ -146,18 +152,18 @@ newtype Input a = Input {
 newtype Output a = Output {
     {-| Receive a message from the 'Output' end
 
-        * Retries if the 'Buffer' is empty and the associated 'Input' is not
+        * Retries if the 'Buffer' is empty and the associated 'Input' hasn't been
           garbage collected.
 
         * Succeeds and returns a 'Just' if the 'Buffer' is not empty.
 
-        * Fails and returns 'Nothing' if the 'Input' is garbage collected.
+        * Fails and returns 'Nothing' if the 'Input' has been garbage collected.
     -}
     recv :: S.STM (Maybe a) }
 
 {-| Writes all messages flowing \'@D@\'ownstream to the given 'Input'
 
-    'sendD' terminates when the corresponding 'Output' is garbage collected.
+    'sendD' terminates when the corresponding 'Output' has been garbage collected.
 -}
 sendD :: (P.Proxy p) => Input a -> x -> p x a x a IO ()
 sendD mailbox = P.runIdentityK loop
