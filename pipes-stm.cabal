@@ -13,7 +13,7 @@ Description: Light-weight concurrency primitives for pipes
   .
   Import "Control.Proxy.STM" to use the library.
   .
-  Read "Control.Proxy.STM.Tutorial" for a really extensive tutorial.
+  Read "Control.Proxy.STM.Tutorial" for an extensive tutorial.
 Category: Control, Pipes, Proxies, Concurrency
 Source-Repository head
     Type: git
