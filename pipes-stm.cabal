@@ -26,5 +26,6 @@ Library
         stm          >= 2.4     && < 2.5,
         transformers >= 0.2.0.0 && < 0.4
     Exposed-Modules:
-        Control.Proxy.STM
+        Control.Proxy.STM,
+        Control.Proxy.STM.Tutorial
     GHC-Options: -O2

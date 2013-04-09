@@ -28,31 +28,42 @@
 module Control.Proxy.STM (
     -- * Spawn Inputs and Outputs
     spawn,
-    Buffer(..),
+    Size(..),
     Input,
     Output,
 
     -- * Send and receive messages
+    -- $sendrcv
     send,
     recv,
 
     -- * Proxy utilities
     sendD,
-    recvS
+    recvS,
+
+    -- * Re-exports
+    -- $reexport
+    module Control.Concurrent,
+    module Control.Concurrent.STM
     ) where
 
 import Control.Applicative ((<|>), (<*), pure)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.STM (atomically, STM)
 import Control.Monad.Trans.Class (lift)
 import qualified Control.Concurrent.STM as S
 import qualified Control.Proxy as P
 import Data.IORef (newIORef, readIORef, mkWeakIORef, IORef)
 import GHC.Conc.Sync (unsafeIOToSTM)
 
-{-| Spawn an 'Input' \/ 'Output' pair that communicate using the specified
-    'Buffer'
+-- Documentation
+import Control.Exception (BlockedIndefinitelyOnSTM)
+
+{-| Spawn an 'Input' \/ 'Output' pair that communicate using a buffer of the
+    specified 'Size'
 -}
-spawn :: Buffer -> IO (Input a, Output a)
-spawn buffer = spawnWith $ case buffer of
+spawn :: Size -> IO (Input a, Output a)
+spawn size = spawnWith $ case size of
     Bounded n -> do
         q <- S.newTBQueueIO n
         let read = do
@@ -93,7 +104,7 @@ spawnWith create = do
        will not consume the 'Nothing'.
 
        The 'write' must be protected with the "pure ()" fallback so that it does
-       not trigger an IndefinitelyBlockedOnSTM exception if the 'Output' end has
+       not trigger an BlockedIndefinitelyOnSTM exception if the 'Output' end has
        also been garbage collected.
     -}
     rUp  <- newIORef ()
@@ -115,16 +126,16 @@ spawnWith create = do
             return True
         {- The '_send' action aborts if the 'Output' has been garbage collected,
            since there is no point wasting memory if nothing can empty the
-           'Buffer'.  This protects against careless users not checking send's
-           return value, especially if they use an 'Unbounded' buffer. -}
+           buffer.  This protects against careless users not checking send's
+           return value, especially if they use a buffer of 'Unbounded' size. -}
         _send a = (quit <|> continue a) <* unsafeIOToSTM (readIORef rUp)
         _recv = read <* unsafeIOToSTM (readIORef rDn)
     return (Input _send , Output _recv)
 
-{-| 'Buffer' specifies how many messages to buffer between the 'Input' and
+{-| 'Size' specifies how many messages to buffer between the 'Input' and
     'Output' before 'send' blocks.
 -}
-data Buffer
+data Size
     -- | Store an unlimited number of messages
     = Unbounded
     -- | Store a finite number of messages specified by the 'Int' argument
@@ -136,10 +147,10 @@ data Buffer
 newtype Input a = Input {
     {-| Send a message to the 'Input' end
 
-        * Retries if the 'Buffer' is full and the associated 'Output' is not
+        * Retries if the buffer is full and the associated 'Output' is not
           garbage collected.
 
-        * Succeeds and returns 'True' if the 'Buffer' is not full.
+        * Succeeds and returns 'True' if the buffer is not full.
 
         * Fails and returns 'False' if the 'Output' is garbage collected.
     -}
@@ -149,14 +160,19 @@ newtype Input a = Input {
 newtype Output a = Output {
     {-| Receive a message from the 'Output' end
 
-        * Retries if the 'Buffer' is empty and the associated 'Input' is not
+        * Retries if the buffer is empty and the associated 'Input' is not
           garbage collected.
 
-        * Succeeds and returns a 'Just' if the 'Buffer' is not empty.
+        * Succeeds and returns a 'Just' if the buffer is not empty.
 
         * Fails and returns 'Nothing' if the 'Input' is garbage collected.
     -}
     recv :: S.STM (Maybe a) }
+
+{- $sendrcv
+    The 'send' and 'recv' commands never throw a 'BlockedIndefinitelyOnSTM'
+    exception.
+-}
 
 {-| Writes all messages flowing \'@D@\'ownstream to the given 'Input'
 
@@ -188,3 +204,9 @@ recvS process () = P.runIdentityP go
             Just a  -> do
                 P.respond a
                 go
+
+{- $reexport
+    @Control.Concurrent@ re-exports 'forkIO'
+
+    @Control.Concurrent.STM@ re-exports 'atomically' and 'STM'
+-}
