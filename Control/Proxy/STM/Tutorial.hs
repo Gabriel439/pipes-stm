@@ -7,6 +7,12 @@
 module Control.Proxy.STM.Tutorial (
     -- * Introduction
     -- $intro
+
+    -- * Work Stealing
+    -- $steal
+
+    -- * Termination
+    -- $termination
     ) where
 
 import Control.Proxy.STM
@@ -15,28 +21,32 @@ import Control.Proxy.STM
     The @pipes-stm@ library provides a simple interface for communicating
     between concurrent pipelines.  Use this library if you want to:
 
-    * merge multiple streams into a single stream, or
+    * merge multiple streams into a single stream,
 
-    * implement work-stealing, or
+    * implement a work-stealing setup, or
 
-    * build a functional reactive programming (FRP) system.
+    * implement basic functional reactive programming (FRP).
 
-    For example, let's say that we design a primitive game with a single unit
-    and define a primitive event handler:
+    For example, let's say that we design a simple game with a single unit's
+    health as the global state and define an event handler that modifies the
+    unit's health in response to events:
 
+> import Control.Monad
 > import Control.Proxy
+> import Control.Proxy.Trans.Maybe
 > import Control.Proxy.Trans.State
 > 
-> data Event = Harm Integer | Heal Integer
+> data Event = Harm Integer | Heal Integer | Quit
 > 
 > type Health = Integer
 > 
-> handler :: (Proxy p) => () -> Consumer (StateP Health p) Event IO r
+> handler :: (Proxy p) => () -> Consumer (StateP Health (MaybeP p)) Event IO r
 > handler () = forever $ do
 >     event <- request ()
 >     case event of
 >         Harm n -> modify (subtract n)
 >         Heal n -> modify (+        n)
+>         Quit   -> mzero
 >     health <- get
 >     lift $ putStrLn $ "Health = " ++ show health
 
@@ -127,3 +137,106 @@ import Control.Proxy.STM
 > quit<Enter>
 > $
 -}
+
+{- $steal
+    You can also have multiple pipes reading from the same 'Buffer'.  Messages
+    get split between listening pipes on a first-come first-serve.
+
+    For example, we'll define a \"worker\" that takes a one-second break each
+    time it receives a new job:
+
+> import Control.Concurrent
+> import Control.Monad
+> import Control.Proxy
+> 
+> worker :: (Proxy p, Show a) => Int -> () -> Consumer p a IO r
+> worker i () = runIdentityP $ forever $ do
+>     a <- request ()
+>     lift $ threadDelay 1000000
+>     lift $ putStrLn $ "Worker #" ++ show i ++ ": Received " ++ show a
+
+    Fortunately, these workers are cheap, so we can assign several of them to
+    the same job:
+
+> import Control.Concurrent.Async
+> import Control.Proxy.STM
+> 
+> main = do
+>     (input, output) <- spawn Unbounded
+>     as <- forM [1..3] $ \i -> async $ runProxy $ recvS output >-> worker i
+>     a  <- async $ runProxy $ fromListS [1..10] >-> sendD input
+>     mapM_ wait (a:as)
+
+    The above example uses @Control.Concurrent.Async@ from the @async@ to fork
+    each thread and wait for all of them to terminate:
+
+> $ ./work
+> Worker #2: Received 3
+> Worker #1: Received 2
+> Worker #3: Received 1
+> Worker #3: Received 6
+> Worker #1: Received 5
+> Worker #2: Received 4
+> Worker #2: Received 9
+> Worker #1: Received 8
+> Worker #3: Received 7
+> Worker #2: Received 10
+> $
+
+    What if we replace 'fromListS' with a different source that reads lines from
+    user input until the user types \"quit\":
+
+> user :: (Proxy p) => () -> Producer p String IO ()
+> user = stdinS >-> takeWhileD (/= "quit")
+> 
+> main = do
+>     (input, output) <- spawn Unbounded
+>     as <- forM [1..3] $ \i -> async $ runProxy $ recvS output >-> worker i
+>     a  <- async $ runProxy $ user >-> sendD input
+>     mapM_ wait (a:as)
+
+    This still produces the correct behavior:
+
+> $ ./work
+> Test<Enter>
+> Worker #1: Received "Test"
+> Apple<Enter>
+> Worker #2: Received "Apple"
+> 42<Enter>
+> Worker #3: Received "42"
+> A<Enter>
+> B<Enter>
+> C<Enter>
+> Worker #1: Received "A"
+> Worker #2: Received "B"
+> Worker #3: Received "C"
+> quit<Enter>
+> $
+-}
+
+{- $termination
+
+    Wait...  How do the workers know when to block and wait for more data and
+    when to terminate?
+
+    It turns out that 'recvS' is smart and only terminates when the upstream
+    'Input' is garbage collected.  'recvS' builds on top of the more primitive
+    'recv' command, which returns a 'Nothing' when the 'Input' is garbage
+    collected:
+
+> recv :: Output a -> STM (Maybe a)
+
+    Otherwise, 'recv' blocks if the buffer is empty since it assumes that if the
+    'Input' has not been garbage collected it may still potentially produce more
+    data.
+
+    Does it work the other way around?  What happens if the workers go on strike
+    before processing the entire data set?
+-}
+
+{- $send
+-}
+
+{- Works with any number of readers and writers and won't throw exceptions -}
+
+{- getting data out of callbacks -}
