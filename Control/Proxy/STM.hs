@@ -138,11 +138,11 @@ spawnWith create = do
     'Output' before 'send' blocks.
 -}
 data Size
-    -- | Store an unlimited number of messages
+    -- | Store an 'Unbounded' number of messages
     = Unbounded
-    -- | Store a finite number of messages specified by the 'Int' argument
+    -- | Store a 'Bounded' number of messages specified by the 'Int' argument
     | Bounded Int
-    -- | Store only a single message (like @Bounded 1@, but more efficient)
+    -- | Store only a 'Single' message (like @Bounded 1@, but more efficient)
     | Single
 
 -- | Receives messages for the associated 'Output'
