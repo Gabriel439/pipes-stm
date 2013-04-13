@@ -44,7 +44,8 @@ module Control.Proxy.STM (
     -- * Re-exports
     -- $reexport
     module Control.Concurrent,
-    module Control.Concurrent.STM
+    module Control.Concurrent.STM,
+    module System.Mem
     ) where
 
 import Control.Applicative ((<|>), (<*), pure)
@@ -55,6 +56,7 @@ import qualified Control.Concurrent.STM as S
 import qualified Control.Proxy as P
 import Data.IORef (newIORef, readIORef, mkWeakIORef, IORef)
 import GHC.Conc.Sync (unsafeIOToSTM)
+import System.Mem (performGC)
 
 -- Documentation
 import Control.Exception (BlockedIndefinitelyOnSTM)
@@ -206,7 +208,9 @@ recvS process () = P.runIdentityP go
                 go
 
 {- $reexport
-    @Control.Concurrent@ re-exports 'forkIO'
+    @Control.Concurrent@ re-exports 'forkIO'.
 
-    @Control.Concurrent.STM@ re-exports 'atomically' and 'STM'
+    @Control.Concurrent.STM@ re-exports 'atomically' and 'STM'.
+
+    @System.Mem@ re-exports 'performGC'.
 -}
