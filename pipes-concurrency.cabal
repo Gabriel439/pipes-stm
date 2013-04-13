@@ -1,4 +1,4 @@
-Name: pipes-stm
+Name: pipes-concurrency
 Version: 1.0.0
 Cabal-Version: >=1.8.0.2
 Build-Type: Simple

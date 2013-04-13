@@ -1,4 +1,4 @@
-{-| This module provides a tutorial for the @pipes-stm@ library.
+{-| This module provides a tutorial for the @pipes-concurrency@ library.
 
     This tutorial assumes that you have read the @pipes@ tutorial in
     @Control.Proxy.Tutorial@.
@@ -13,15 +13,32 @@ module Control.Proxy.STM.Tutorial (
 
     -- * Termination
     -- $termination
+
+    -- * Buffer Sizes
+    -- $buffer
+
+    -- * Callbacks
+    -- $callback
+
+    -- * Safety
+    -- $safety
+
+    -- * Conclusion
+    -- $conclusion
     ) where
 
+import Control.Exception (BlockedIndefinitelyOnSTM)
+import Control.Proxy
 import Control.Proxy.STM
 
 {- $intro
-    The @pipes-stm@ library provides a simple interface for communicating
-    between concurrent pipelines.  Use this library if you want to:
+    The @pipes-concurrency@ library provides a simple interface for
+    communicating between concurrent pipelines.  Use this library if you want
+    to:
 
     * merge multiple streams into a single stream,
+
+    * stream data from a callback \/ continuation,
 
     * implement a work-stealing setup, or
 
@@ -157,7 +174,7 @@ import Control.Proxy.STM
 > worker :: (Proxy p, Show a) => Int -> () -> Consumer p a IO r
 > worker i () = runIdentityP $ forever $ do
 >     a <- request ()
->     lift $ threadDelay 1000000
+>     lift $ threadDelay 1000000  -- 1 second
 >     lift $ putStrLn $ "Worker #" ++ show i ++ ": Processed " ++ show a
 
     Fortunately, these workers are cheap, so we can assign several of them to
@@ -178,18 +195,18 @@ import Control.Proxy.STM
     The above example uses @Control.Concurrent.Async@ from the @async@ to fork
     each thread and wait for all of them to terminate:
 
->>> main
-Worker #2: Processed 3
-Worker #1: Processed 2
-Worker #3: Processed 1
-Worker #3: Processed 6
-Worker #1: Processed 5
-Worker #2: Processed 4
-Worker #2: Processed 9
-Worker #1: Processed 8
-Worker #3: Processed 7
-Worker #2: Processed 10
->>>
+> $ ./work
+> Worker #2: Processed 3
+> Worker #1: Processed 2
+> Worker #3: Processed 1
+> Worker #3: Processed 6
+> Worker #1: Processed 5
+> Worker #2: Processed 4
+> Worker #2: Processed 9
+> Worker #1: Processed 8
+> Worker #3: Processed 7
+> Worker #2: Processed 10
+> $
 
     What if we replace 'fromListS' with a different source that reads lines from
     user input until the user types \"quit\":
@@ -208,21 +225,21 @@ Worker #2: Processed 10
 
     This still produces the correct behavior:
 
->>> main
-Test<Enter>
-Worker #1: Processed "Test"
-Apple<Enter>
-Worker #2: Processed "Apple"
-42<Enter>
-Worker #3: Processed "42"
-A<Enter>
-B<Enter>
-C<Enter>
-Worker #1: Processed "A"
-Worker #2: Processed "B"
-Worker #3: Processed "C"
-quit<Enter>
->>>
+> $ ./work
+> Test<Enter>
+> Worker #1: Processed "Test"
+> Apple<Enter>
+> Worker #2: Processed "Apple"
+> 42<Enter>
+> Worker #3: Processed "42"
+> A<Enter>
+> B<Enter>
+> C<Enter>
+> Worker #1: Processed "A"
+> Worker #2: Processed "B"
+> Worker #3: Processed "C"
+> quit<Enter>
+> $
 -}
 
 {- $termination
@@ -252,27 +269,195 @@ quit<Enter>
 >     lift $ threadDelay 1000000
 >     lift $ putStrLn $ "Worker #" ++ show i ++ ": Processed " ++ show a
 
->>> main
-How<Enter>
-Worker #1: Processed "How"
-many<Enter>
-roads<Enter>
-Worker #2: Processed "many"
-Worker #3: Processed "roads"
-must<Enter>
-a<Enter>
-man<Enter>
-Worker #1: Processed "must"
-Worker #2: Processed "a"
-Worker #3: Processed "man"
-walk<Enter>
->>>
+> $ ./work
+> How<Enter>
+> Worker #1: Processed "How"
+> many<Enter>
+> roads<Enter>
+> Worker #2: Processed "many"
+> Worker #3: Processed "roads"
+> must<Enter>
+> a<Enter>
+> man<Enter>
+> Worker #1: Processed "must"
+> Worker #2: Processed "a"
+> Worker #3: Processed "man"
+> walk<Enter>
+> $
+
+    'sendD' similarly shuts down when the 'Output' is garbage collected,
+    preventing the user from submitting new values.  'sendD' builds on top of
+    the more primitive 'send' command, which returns a 'False' when the 'Output'
+    is garbage collected:
+
+> send :: Input a -> a -> STM Bool
+
+    Otherwise, 'send' blocks if the buffer is full, since it assumes that if the
+    'Output' has not been garbage collected then somebody could still consume a
+    value from the buffer, making room for a new value.
+
+    This is why we have to insert 'performGC' calls whenever we release a
+    reference to either the 'Input' or 'Output'.  Without these calls we cannot
+    guarantee that the garbage collector will trigger and notify the opposing
+    end if the last reference was released.
+-}
+
+{- $buffer
+    So far we haven't observed 'send' blocking because we only 'spawn'ed
+    'Unbounded' buffers.  However, we can control the size of the buffer to tune
+    the coupling between the 'Input' and the 'Output' ends.
+
+    If we set the buffer 'Size' to 'Single', then the buffer holds exactly one
+    message, forcing synchronization between 'send's and 'recv's.  Let's
+    observe this by sending an infinite stream of values, logging all values to
+    'stdout':
+
+> main = do
+>     (input, output) <- spawn Single
+>     as <- forM [1..3] $ \i ->
+>           async $ do runProxy $ recvS output >-> worker i
+>                      performGC
+>     a  <- async $ do runProxy $ enumFromS 1 >-> printD >-> sendD input
+>                      performGC
+>     mapM_ wait (a:as)
+
+    The 7th value gets stuck in the buffer, and the 8th value blocks because the
+    buffer never clears the 7th value:
+
+> $ ./work
+> 1
+> 2
+> 3
+> 4
+> 5
+> Worker #3: Processed 3
+> Worker #2: Processed 2
+> Worker #1: Processed 1
+> 6
+> 7
+> 8
+> Worker #1: Processed 6
+> Worker #2: Processed 5
+> Worker #3: Processed 4
+> $
+
+    Contrast this with an 'Unbounded' buffer for the same program, which keeps
+    accepting values until downstream finishes processing the first six values:
+
+> $ ./work
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> 9
+> ...
+> 487887
+> 487888
+> Worker #3: Processed 3
+> Worker #2: Processed 2
+> Worker #1: Processed 1
+> 487889
+> 487890
+> ...
+> 969188
+> 969189
+> Worker #1: Processed 6
+> Worker #2: Processed 5
+> Worker #3: Processed 4
+> 969190
+> 969191
+> $
+
+    You can also choose something in between by using a 'Bounded' buffer which
+    caps the buffer size to a fixed value.  Use 'Bounded' when you want mostly
+    loose coupling but still want to guarantee bounded memory usage:
+
+> main = do
+>     (input, output) <- spawn (Bounded 100)
+>     ...
+
+> $ ./work
+> ...
+> 103
+> 104
+> Worker #3: Processed 3
+> Worker #2: Processed 2
+> Worker #1: Processed 1
+> 105
+> 106
+> 107
+> Worker #1: Processed 6
+> Worker #2: Processed 5
+> Worker #3: Processed 4
+> $
+-}
+
+{- $callback
+    @pipes-concurrency@ also solves the common problem of getting data out of a
+    callback-based framework into @pipes@.
+
+    For example, suppose that we have the following callback-based function:
+
+> import Control.Monad
+> 
+> onLines :: (String -> IO a) -> IO b
+> onLines callback = forever $ do
+>     str <- getLine
+>     callback str
+
+    We use 'send' to free the data from the callback and retrieve the data on
+    the outside using 'recvS':
+
+> import Control.Proxy
+> import Control.Proxy.STM
+> 
+> onLines' :: (Proxy p) => () -> Producer p String IO ()
+> onLines' () = runIdentityP $ do
+>     (input, output) <- lift $ spawn Single
+>     lift $ forkIO $ onLines (\str -> atomically $ send input str)
+>     recvS output ()
+> 
+> main = runProxy $ onLines' >-> takeWhileD (/= "quit) >-> stdoutD
+
+    Now we can stream from the callback as if it were an ordinary 'Producer':
+
+> $ ./callback
+> Test<Enter>
+> Test
+> Apple<Enter>
+> Apple
+> quit<Enter>
+> $
 
 -}
 
-{- $send
+{- $safety
+    'STM' veterans will notice that @pipes-concurrency@ never throws a
+    'BlockedIndefinitelyOnSTM' exception, or any other concurrency exception.
+    @pipes-concurrency@ protects against these exceptions by guaranteeing that
+    'send' and 'recv' never throw them.  This safe-guard eliminates the largest
+    class of 'STM' programming bugs.
+
+    @pipes-concurrency@ safely protects against even the most pathological use
+    cases, including:
+
+    * multiple readers and multiple writers to the same buffer,
+
+    * large graphs of connected buffers,
+
+    * dynamically adding or removing buffers, and
+
+    * dynamically adding or removing references to buffers.
 -}
 
-{- Works with any number of readers and writers and won't throw exceptions -}
-
-{- getting data out of callbacks -}
+{- $conclusion
+    Like all coroutines, @pipes@ are a form of deterministic concurrency, and in
+    any given pipeline you can only have one active stage at all times.
+    @pipes-concurrency@ adds an asynchronous dimension to @pipes@ by allowing
+    you to fork one pipeline per concurrent behavior and seamlessly communicate
+    between them.
+-}
