@@ -84,6 +84,8 @@ import Control.Proxy.STM
     * an @(Output a)@ that we use to consume messages of type @a@ from the
       buffer
 
+> import Control.Proxy.STM
+>
 > main = do
 >     (input, output) <- spawn Unbounded
 >     ...
@@ -97,11 +99,13 @@ import Control.Proxy.STM
 > sendD :: (Proxy p) => Input a -> x -> p x a x a IO ()
 
     We can concurrently forward multiple streams to the same 'Input', which
-    merges their messages into the buffer on a first-come first-serve basis:
+    asynchronously merges their messages into the same buffer:
 
 >     ...
->     forkIO $ runProxy $ acidRain >-> sendD input
->     forkIO $ runProxy $ user     >-> sendD input
+>     forkIO $ do runProxy $ acidRain >-> sendD input
+>                 performGC  -- I'll explain 'performGC' below
+>     forkIO $ do runProxy $ user     >-> sendD input
+>                 performGC
 >     ...
 
     To stream @Event@s out of the buffer, we use 'recvS', which reads values
@@ -134,13 +138,14 @@ import Control.Proxy.STM
 > Health = 106
 > potion<Enter>
 > Health = 116
+> Health = 115
 > quit<Enter>
 > $
 -}
 
 {- $steal
     You can also have multiple pipes reading from the same 'Buffer'.  Messages
-    get split between listening pipes on a first-come first-serve.
+    get split between listening pipes on a first-come first-serve basis.
 
     For example, we'll define a \"worker\" that takes a one-second break each
     time it receives a new job:
@@ -153,7 +158,7 @@ import Control.Proxy.STM
 > worker i () = runIdentityP $ forever $ do
 >     a <- request ()
 >     lift $ threadDelay 1000000
->     lift $ putStrLn $ "Worker #" ++ show i ++ ": Received " ++ show a
+>     lift $ putStrLn $ "Worker #" ++ show i ++ ": Processed " ++ show a
 
     Fortunately, these workers are cheap, so we can assign several of them to
     the same job:
@@ -163,25 +168,28 @@ import Control.Proxy.STM
 > 
 > main = do
 >     (input, output) <- spawn Unbounded
->     as <- forM [1..3] $ \i -> async $ runProxy $ recvS output >-> worker i
->     a  <- async $ runProxy $ fromListS [1..10] >-> sendD input
+>     as <- forM [1..3] $ \i ->
+>           async $ do runProxy $ recvS output >-> worker i
+>                      performGC
+>     a  <- async $ do runProxy $ fromListS [1..10] >-> sendD input
+>                      performGC
 >     mapM_ wait (a:as)
 
     The above example uses @Control.Concurrent.Async@ from the @async@ to fork
     each thread and wait for all of them to terminate:
 
-> $ ./work
-> Worker #2: Received 3
-> Worker #1: Received 2
-> Worker #3: Received 1
-> Worker #3: Received 6
-> Worker #1: Received 5
-> Worker #2: Received 4
-> Worker #2: Received 9
-> Worker #1: Received 8
-> Worker #3: Received 7
-> Worker #2: Received 10
-> $
+>>> main
+Worker #2: Processed 3
+Worker #1: Processed 2
+Worker #3: Processed 1
+Worker #3: Processed 6
+Worker #1: Processed 5
+Worker #2: Processed 4
+Worker #2: Processed 9
+Worker #1: Processed 8
+Worker #3: Processed 7
+Worker #2: Processed 10
+>>>
 
     What if we replace 'fromListS' with a different source that reads lines from
     user input until the user types \"quit\":
@@ -191,33 +199,37 @@ import Control.Proxy.STM
 > 
 > main = do
 >     (input, output) <- spawn Unbounded
->     as <- forM [1..3] $ \i -> async $ runProxy $ recvS output >-> worker i
->     a  <- async $ runProxy $ user >-> sendD input
+>     as <- forM [1..3] $ \i ->
+>           async $ do runProxy $ recvS output >-> worker i
+>                      performGC
+>     a  <- async $ do runProxy $ user >-> sendD input
+>                      performGC
 >     mapM_ wait (a:as)
 
     This still produces the correct behavior:
 
-> $ ./work
-> Test<Enter>
-> Worker #1: Received "Test"
-> Apple<Enter>
-> Worker #2: Received "Apple"
-> 42<Enter>
-> Worker #3: Received "42"
-> A<Enter>
-> B<Enter>
-> C<Enter>
-> Worker #1: Received "A"
-> Worker #2: Received "B"
-> Worker #3: Received "C"
-> quit<Enter>
-> $
+>>> main
+Test<Enter>
+Worker #1: Processed "Test"
+Apple<Enter>
+Worker #2: Processed "Apple"
+42<Enter>
+Worker #3: Processed "42"
+A<Enter>
+B<Enter>
+C<Enter>
+Worker #1: Processed "A"
+Worker #2: Processed "B"
+Worker #3: Processed "C"
+quit<Enter>
+>>>
 -}
 
 {- $termination
 
-    Wait...  How do the workers know when to block and wait for more data and
-    when to terminate?
+    Wait...  How do the workers know when to stop listening for data?  After
+    all, anything that has a reference to 'Input' could potentially add more
+    data to the buffer.
 
     It turns out that 'recvS' is smart and only terminates when the upstream
     'Input' is garbage collected.  'recvS' builds on top of the more primitive
@@ -227,11 +239,35 @@ import Control.Proxy.STM
 > recv :: Output a -> STM (Maybe a)
 
     Otherwise, 'recv' blocks if the buffer is empty since it assumes that if the
-    'Input' has not been garbage collected it may still potentially produce more
-    data.
+    'Input' has not been garbage collected then somebody might still produce
+    more data.
 
     Does it work the other way around?  What happens if the workers go on strike
     before processing the entire data set?
+
+> -- Each worker refuses to process more than two values
+> worker :: (Proxy p, Show a) => Int -> () -> Consumer p a IO ()
+> worker i () = runIdentityP $ replicateM_ 2 $ do
+>     a <- request ()
+>     lift $ threadDelay 1000000
+>     lift $ putStrLn $ "Worker #" ++ show i ++ ": Processed " ++ show a
+
+>>> main
+How<Enter>
+Worker #1: Processed "How"
+many<Enter>
+roads<Enter>
+Worker #2: Processed "many"
+Worker #3: Processed "roads"
+must<Enter>
+a<Enter>
+man<Enter>
+Worker #1: Processed "must"
+Worker #2: Processed "a"
+Worker #3: Processed "man"
+walk<Enter>
+>>>
+
 -}
 
 {- $send
