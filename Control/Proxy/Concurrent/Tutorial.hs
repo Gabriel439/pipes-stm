@@ -4,7 +4,7 @@
     @Control.Proxy.Tutorial@.
 -}
 
-module Control.Proxy.STM.Tutorial (
+module Control.Proxy.Concurrent.Tutorial (
     -- * Introduction
     -- $intro
 
@@ -29,7 +29,7 @@ module Control.Proxy.STM.Tutorial (
 
 import Control.Exception (BlockedIndefinitelyOnSTM)
 import Control.Proxy
-import Control.Proxy.STM
+import Control.Proxy.Concurrent
 
 {- $intro
     The @pipes-concurrency@ library provides a simple interface for
@@ -101,7 +101,7 @@ import Control.Proxy.STM
     * an @(Output a)@ that we use to consume messages of type @a@ from the
       buffer
 
-> import Control.Proxy.STM
+> import Control.Proxy.Concurrent
 >
 > main = do
 >     (input, output) <- spawn Unbounded
@@ -181,7 +181,7 @@ import Control.Proxy.STM
     the same job:
 
 > import Control.Concurrent.Async
-> import Control.Proxy.STM
+> import Control.Proxy.Concurrent
 > 
 > main = do
 >     (input, output) <- spawn Unbounded
@@ -413,7 +413,7 @@ import Control.Proxy.STM
     the outside using 'recvS':
 
 > import Control.Proxy
-> import Control.Proxy.STM
+> import Control.Proxy.Concurrent
 > 
 > onLines' :: (Proxy p) => () -> Producer p String IO ()
 > onLines' () = runIdentityP $ do

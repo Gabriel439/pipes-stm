@@ -11,9 +11,9 @@ Bug-Reports: https://github.com/Gabriel439/Haskell-Pipes-STM-Library/issues
 Synopsis: Concurrency for the pipes ecosystem
 Description: Light-weight concurrency primitives for pipes
   .
-  Import "Control.Proxy.STM" to use the library.
+  Import "Control.Proxy.Concurrent" to use the library.
   .
-  Read "Control.Proxy.STM.Tutorial" for an extensive tutorial.
+  Read "Control.Proxy.Concurrent.Tutorial" for an tutorial.
 Category: Control, Pipes, Proxies, Concurrency
 Source-Repository head
     Type: git
@@ -26,6 +26,6 @@ Library
         stm          >= 2.4     && < 2.5,
         transformers >= 0.2.0.0 && < 0.4
     Exposed-Modules:
-        Control.Proxy.STM,
-        Control.Proxy.STM.Tutorial
+        Control.Proxy.Concurrent,
+        Control.Proxy.Concurrent.Tutorial
     GHC-Options: -O2

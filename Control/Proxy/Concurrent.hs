@@ -25,7 +25,7 @@
     to combine them into larger transactions.
 -}
 
-module Control.Proxy.STM (
+module Control.Proxy.Concurrent (
     -- * Spawn Inputs and Outputs
     spawn,
     Size(..),
@@ -208,7 +208,8 @@ recvS process () = P.runIdentityP go
                 go
 
 {- $reexport
-    @Control.Concurrent@ re-exports 'forkIO'.
+    @Control.Concurrent@ re-exports 'forkIO', although I recommend using the
+    @async@ library instead.
 
     @Control.Concurrent.STM@ re-exports 'atomically' and 'STM'.
 
