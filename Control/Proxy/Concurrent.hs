@@ -61,42 +61,39 @@ import System.Mem (performGC)
 -- Documentation
 import Control.Exception (BlockedIndefinitelyOnSTM)
 
-{-| Spawn an 'Input' \/ 'Output' pair that communicate using a buffer of the
+{-| Spawn an 'Input' \/ 'Output' pair that communicate using a mailbox of the
     specified 'Size'
 -}
 spawn :: Size -> IO (Input a, Output a)
-spawn size = spawnWith $ case size of
-    Bounded n -> do
-        q <- S.newTBQueueIO n
-        let read = do
-                ma <- S.readTBQueue q
-                case ma of
-                    Nothing -> S.unGetTBQueue q ma
-                    _       -> return ()
-                return ma
-        return (read, S.writeTBQueue q)
-    Unbounded -> do
-        q <- S.newTQueueIO
-        let read = do
-                ma <- S.readTQueue q
-                case ma of
-                    Nothing -> S.unGetTQueue q ma
-                    _       -> return ()
-                return ma
-        return (read, S.writeTQueue q)
-    Single    -> do
-        m <- S.newEmptyTMVarIO
-        let read = do
-                ma <- S.takeTMVar m
-                case ma of
-                    Nothing -> S.putTMVar m ma
-                    _       -> return ()
-                return ma
-        return (read, S.putTMVar m)
-
-spawnWith :: IO (S.STM (Maybe a), Maybe a -> S.STM ()) -> IO (Input a, Output a)
-spawnWith create = do
-    (read, write) <- create
+spawn size = do
+    (read, write) <- case size of
+        Bounded n -> do
+            q <- S.newTBQueueIO n
+            let read = do
+                    ma <- S.readTBQueue q
+                    case ma of
+                        Nothing -> S.unGetTBQueue q ma
+                        _       -> return ()
+                    return ma
+            return (read, S.writeTBQueue q)
+        Unbounded -> do
+            q <- S.newTQueueIO
+            let read = do
+                    ma <- S.readTQueue q
+                    case ma of
+                        Nothing -> S.unGetTQueue q ma
+                        _       -> return ()
+                    return ma
+            return (read, S.writeTQueue q)
+        Single    -> do
+            m <- S.newEmptyTMVarIO
+            let read = do
+                    ma <- S.takeTMVar m
+                    case ma of
+                        Nothing -> S.putTMVar m ma
+                        _       -> return ()
+                    return ma
+            return (read, S.putTMVar m)
 
     {- Use an IORef to keep track of whether the 'Input' end has been garbage
        collected and run a finalizer when the collection occurs
@@ -128,14 +125,15 @@ spawnWith create = do
             return True
         {- The '_send' action aborts if the 'Output' has been garbage collected,
            since there is no point wasting memory if nothing can empty the
-           buffer.  This protects against careless users not checking send's
-           return value, especially if they use a buffer of 'Unbounded' size. -}
+           mailbox.  This protects against careless users not checking send's
+           return value, especially if they use a mailbox of 'Unbounded' size.
+        -}
         _send a = (quit <|> continue a) <* unsafeIOToSTM (readIORef rUp)
         _recv = read <* unsafeIOToSTM (readIORef rDn)
     return (Input _send , Output _recv)
 
-{-| 'Size' specifies how many messages to buffer between the 'Input' and
-    'Output' before 'send' blocks.
+{-| 'Size' specifies how many messages to store in the mailbox before 'send'
+    blocks.
 -}
 data Size
     -- | Store an 'Unbounded' number of messages
@@ -149,10 +147,10 @@ data Size
 newtype Input a = Input {
     {-| Send a message to the 'Input' end
 
-        * Retries if the buffer is full and the associated 'Output' is not
+        * Retries if the mailbox is full and the associated 'Output' is not
           garbage collected.
 
-        * Succeeds and returns 'True' if the buffer is not full.
+        * Succeeds and returns 'True' if the mailbox is not full.
 
         * Fails and returns 'False' if the 'Output' is garbage collected.
     -}
@@ -162,10 +160,10 @@ newtype Input a = Input {
 newtype Output a = Output {
     {-| Receive a message from the 'Output' end
 
-        * Retries if the buffer is empty and the associated 'Input' is not
+        * Retries if the mailbox is empty and the associated 'Input' is not
           garbage collected.
 
-        * Succeeds and returns a 'Just' if the buffer is not empty.
+        * Succeeds and returns a 'Just' if the mailbox is not empty.
 
         * Fails and returns 'Nothing' if the 'Input' is garbage collected.
     -}
@@ -181,11 +179,11 @@ newtype Output a = Output {
     'sendD' terminates when the corresponding 'Output' is garbage collected.
 -}
 sendD :: (P.Proxy p) => Input a -> x -> p x a x a IO ()
-sendD mailbox = P.runIdentityK loop
+sendD input = P.runIdentityK loop
   where
     loop x = do
         a <- P.request x
-        alive <- lift $ S.atomically $ send mailbox a
+        alive <- lift $ S.atomically $ send input a
         if alive
             then do
                 x2 <- P.respond a
@@ -197,10 +195,10 @@ sendD mailbox = P.runIdentityK loop
     'recvS' terminates when the corresponding 'Input' is garbage collected.
 -}
 recvS :: (P.Proxy p) => Output a -> () -> P.Producer p a IO ()
-recvS process () = P.runIdentityP go
+recvS output () = P.runIdentityP go
   where
     go = do
-        ma <- lift $ S.atomically $ recv process
+        ma <- lift $ S.atomically $ recv output
         case ma of
             Nothing -> return ()
             Just a  -> do

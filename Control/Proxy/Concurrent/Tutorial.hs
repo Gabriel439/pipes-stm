@@ -14,8 +14,8 @@ module Control.Proxy.Concurrent.Tutorial (
     -- * Termination
     -- $termination
 
-    -- * Buffer Sizes
-    -- $buffer
+    -- * Mailbox Sizes
+    -- $mailbox
 
     -- * Callbacks
     -- $callback
@@ -25,6 +25,9 @@ module Control.Proxy.Concurrent.Tutorial (
 
     -- * Conclusion
     -- $conclusion
+
+    -- * Appendix
+    -- $appendix
     ) where
 
 import Control.Exception (BlockedIndefinitelyOnSTM)
@@ -45,7 +48,7 @@ import Control.Proxy.Concurrent
     * implement basic functional reactive programming (FRP).
 
     For example, let's say that we design a simple game with a single unit's
-    health as the global state and define an event handler that modifies the
+    health as the global state.  We'll define an event handler that modifies the
     unit's health in response to events:
 
 > import Control.Monad
@@ -53,8 +56,10 @@ import Control.Proxy.Concurrent
 > import Control.Proxy.Trans.Maybe
 > import Control.Proxy.Trans.State
 > 
+> -- The game events
 > data Event = Harm Integer | Heal Integer | Quit
 > 
+> -- The game state
 > type Health = Integer
 > 
 > handler :: (Proxy p) => () -> Consumer (StateP Health (MaybeP p)) Event IO r
@@ -87,19 +92,19 @@ import Control.Proxy.Concurrent
 >     respond (Harm 1)
 >     lift $ threadDelay 2000000
 
-    To merge these sources, we 'spawn' a new FIFO buffer which we will use to
+    To merge these sources, we 'spawn' a new FIFO mailbox which we will use to
     merge the two streams of asynchronous events:
 
 > spawn :: Size -> IO (Input a, Output a)
 
-    'spawn' takes a buffer 'Size' as an argument, and we specify that we want
-    our buffer to store an 'Unbounded' number of message.  'spawn' creates
-    this buffer in the background and then returns two values:
+    'spawn' takes a mailbox 'Size' as an argument, and we specify that we want
+    our mailbox to store an 'Unbounded' number of message.  'spawn' creates
+    this mailbox in the background and then returns two values:
 
-    * an @(Input a)@ that we use to add messages of type @a@ in the buffer
+    * an @(Input a)@ that we use to add messages of type @a@ to the mailbox
 
     * an @(Output a)@ that we use to consume messages of type @a@ from the
-      buffer
+      mailbox
 
 > import Control.Proxy.Concurrent
 >
@@ -107,16 +112,16 @@ import Control.Proxy.Concurrent
 >     (input, output) <- spawn Unbounded
 >     ...
 
-    We will be streaming @Event@s through our buffer, so our @input@ has type
+    We will be streaming @Event@s through our mailbox, so our @input@ has type
     @(Input Event)@ and our @output@ has type @(Output Event)@.
 
-    To stream @Event@s into the buffer, we use 'sendD', which writes values to
-    the buffer's 'Input' end:
+    To stream @Event@s into the mailbox , we use 'sendD', which writes values to
+    the mailbox's 'Input' end:
 
 > sendD :: (Proxy p) => Input a -> x -> p x a x a IO ()
 
     We can concurrently forward multiple streams to the same 'Input', which
-    asynchronously merges their messages into the same buffer:
+    asynchronously merges their messages into the same mailbox:
 
 >     ...
 >     forkIO $ do runProxy $ acidRain >-> sendD input
@@ -125,8 +130,8 @@ import Control.Proxy.Concurrent
 >                 performGC
 >     ...
 
-    To stream @Event@s out of the buffer, we use 'recvS', which reads values
-    from the buffer's 'Output' end:
+    To stream @Event@s out of the mailbox, we use 'recvS', which reads values
+    from the mailbox's 'Output' end:
 
 > recvS :: (Proxy p) => Output a -> () -> Producer p a IO ()
 
@@ -140,8 +145,10 @@ import Control.Proxy.Concurrent
 
 > main = do
 >     (input, output) <- spawn Unbounded
->     forkIO $ runProxy $ acidRain >-> sendD input
->     forkIO $ runProxy $ user     >-> sendD input
+>     forkIO $ do runProxy $ acidRain >-> sendD input
+>                 performGC  -- I'll explain 'performGC' below
+>     forkIO $ do runProxy $ user     >-> sendD input
+>                 performGC
 >     runProxy $ runMaybeK $ evalStateK 100 $ recvS output >-> handler
 
     ... and when we run it we get the desired concurrent behavior:
@@ -161,7 +168,7 @@ import Control.Proxy.Concurrent
 -}
 
 {- $steal
-    You can also have multiple pipes reading from the same 'Buffer'.  Messages
+    You can also have multiple pipes reading from the same mailbox.  Messages
     get split between listening pipes on a first-come first-serve basis.
 
     For example, we'll define a \"worker\" that takes a one-second break each
@@ -246,7 +253,7 @@ import Control.Proxy.Concurrent
 
     Wait...  How do the workers know when to stop listening for data?  After
     all, anything that has a reference to 'Input' could potentially add more
-    data to the buffer.
+    data to the mailbox.
 
     It turns out that 'recvS' is smart and only terminates when the upstream
     'Input' is garbage collected.  'recvS' builds on top of the more primitive
@@ -255,8 +262,8 @@ import Control.Proxy.Concurrent
 
 > recv :: Output a -> STM (Maybe a)
 
-    Otherwise, 'recv' blocks if the buffer is empty since it assumes that if the
-    'Input' has not been garbage collected then somebody might still produce
+    Otherwise, 'recv' blocks if the mailbox is empty since it assumes that if
+    the 'Input' has not been garbage collected then somebody might still produce
     more data.
 
     Does it work the other way around?  What happens if the workers go on strike
@@ -292,9 +299,9 @@ import Control.Proxy.Concurrent
 
 > send :: Input a -> a -> STM Bool
 
-    Otherwise, 'send' blocks if the buffer is full, since it assumes that if the
-    'Output' has not been garbage collected then somebody could still consume a
-    value from the buffer, making room for a new value.
+    Otherwise, 'send' blocks if the mailbox is full, since it assumes that if
+    the 'Output' has not been garbage collected then somebody could still
+    consume a value from the mailbox, making room for a new value.
 
     This is why we have to insert 'performGC' calls whenever we release a
     reference to either the 'Input' or 'Output'.  Without these calls we cannot
@@ -302,12 +309,12 @@ import Control.Proxy.Concurrent
     end if the last reference was released.
 -}
 
-{- $buffer
+{- $mailbox
     So far we haven't observed 'send' blocking because we only 'spawn'ed
-    'Unbounded' buffers.  However, we can control the size of the buffer to tune
-    the coupling between the 'Input' and the 'Output' ends.
+    'Unbounded' mailboxes.  However, we can control the size of the mailbox to
+    tune the coupling between the 'Input' and the 'Output' ends.
 
-    If we set the buffer 'Size' to 'Single', then the buffer holds exactly one
+    If we set the mailbox 'Size' to 'Single', then the mailbox holds exactly one
     message, forcing synchronization between 'send's and 'recv's.  Let's
     observe this by sending an infinite stream of values, logging all values to
     'stdout':
@@ -321,8 +328,8 @@ import Control.Proxy.Concurrent
 >                      performGC
 >     mapM_ wait (a:as)
 
-    The 7th value gets stuck in the buffer, and the 8th value blocks because the
-    buffer never clears the 7th value:
+    The 7th value gets stuck in the mailbox, and the 8th value blocks because
+    the mailbox never clears the 7th value:
 
 > $ ./work
 > 1
@@ -341,7 +348,7 @@ import Control.Proxy.Concurrent
 > Worker #3: Processed 4
 > $
 
-    Contrast this with an 'Unbounded' buffer for the same program, which keeps
+    Contrast this with an 'Unbounded' mailbox for the same program, which keeps
     accepting values until downstream finishes processing the first six values:
 
 > $ ./work
@@ -372,8 +379,8 @@ import Control.Proxy.Concurrent
 > 969191
 > $
 
-    You can also choose something in between by using a 'Bounded' buffer which
-    caps the buffer size to a fixed value.  Use 'Bounded' when you want mostly
+    You can also choose something in between by using a 'Bounded' mailbox which
+    caps the mailbox size to a fixed value.  Use 'Bounded' when you want mostly
     loose coupling but still want to guarantee bounded memory usage:
 
 > main = do
@@ -409,8 +416,8 @@ import Control.Proxy.Concurrent
 >     str <- getLine
 >     callback str
 
-    We use 'send' to free the data from the callback and retrieve the data on
-    the outside using 'recvS':
+    We can use 'send' to free the data from the callback and then we can
+    retrieve the data on the outside using 'recvS':
 
 > import Control.Proxy
 > import Control.Proxy.Concurrent
@@ -421,7 +428,7 @@ import Control.Proxy.Concurrent
 >     lift $ forkIO $ onLines (\str -> atomically $ send input str)
 >     recvS output ()
 > 
-> main = runProxy $ onLines' >-> takeWhileD (/= "quit) >-> stdoutD
+> main = runProxy $ onLines' >-> takeWhileD (/= "quit") >-> stdoutD
 
     Now we can stream from the callback as if it were an ordinary 'Producer':
 
@@ -439,25 +446,132 @@ import Control.Proxy.Concurrent
     'STM' veterans will notice that @pipes-concurrency@ never throws a
     'BlockedIndefinitelyOnSTM' exception, or any other concurrency exception.
     @pipes-concurrency@ protects against these exceptions by guaranteeing that
-    'send' and 'recv' never throw them.  This safe-guard eliminates the largest
-    class of 'STM' programming bugs.
+    'send' and 'recv' never block on the mailbox when the opposing end is
+    garbage collected.  This safe-guard eliminates the most common class of
+    'STM' programming bugs.
 
-    @pipes-concurrency@ safely protects against even the most pathological use
-    cases, including:
+    @pipes-concurrency@ safely protects against these exceptions in all cases,
+    including more complicated scenarios such as:
 
-    * multiple readers and multiple writers to the same buffer,
+    * multiple readers and multiple writers to the same mailbox,
 
-    * large graphs of connected buffers,
+    * large graphs of connected mailboxes,
 
-    * dynamically adding or removing buffers, and
+    * dynamically adding or garbage collecting mailboxes, and
 
-    * dynamically adding or removing references to buffers.
+    * dynamically adding or garbage collecting references to mailboxes.
 -}
 
 {- $conclusion
-    Like all coroutines, @pipes@ are a form of deterministic concurrency, and in
-    any given pipeline you can only have one active stage at all times.
-    @pipes-concurrency@ adds an asynchronous dimension to @pipes@ by allowing
-    you to fork one pipeline per concurrent behavior and seamlessly communicate
-    between them.
+    @pipes-concurrency@ adds an asynchronous dimension to @pipes@.  This
+    promotes a natural division of labor for concurrent programs:
+
+    * Fork one pipeline per deterministic behavior
+
+    * Communicate between concurrent pipelines using @pipes-stm@
+
+    This promotes an actor-style approach to concurrent programming where
+    pipelines behave like processes and mailboxes behave like ... mailboxes.
+-}
+
+{- $appendix
+    I've provided the full code for the above examples here so you can easily
+    try them out:
+
+> -- game.hs
+>
+> import Control.Concurrent
+> import Control.Monad
+> import Control.Proxy
+> import Control.Proxy.Concurrent
+> import Control.Proxy.Trans.Maybe
+> import Control.Proxy.Trans.State
+> 
+> -- The game events
+> data Event = Harm Integer | Heal Integer | Quit
+> 
+> -- The game state
+> type Health = Integer
+> 
+> handler :: (Proxy p) => () -> Consumer (StateP Health (MaybeP p)) Event IO r
+> handler () = forever $ do
+>     event <- request ()
+>     case event of
+>         Harm n -> modify (subtract n)
+>         Heal n -> modify (+        n)
+>         Quit   -> mzero
+>     health <- get
+>     lift $ putStrLn $ "Health = " ++ show health
+>
+> user :: (Proxy p) => () -> Producer p Event IO ()
+> user () = runIdentityP $ forever $ do
+>     command <- lift getLine
+>     case command of
+>         "potion" -> respond (Heal 10)
+>         "quit"   -> respond  Quit
+>         _        -> lift $ putStrLn "Invalid command"
+>
+> acidRain :: (Proxy p) => () -> Producer p Event IO r
+> acidRain () = runIdentityP $ forever $ do
+>     respond (Harm 1)
+>     lift $ threadDelay 2000000
+>
+> main = do
+>     (input, output) <- spawn Unbounded
+>     forkIO $ do runProxy $ acidRain >-> sendD input
+>                 performGC  -- I'll explain 'performGC' below
+>     forkIO $ do runProxy $ user     >-> sendD input
+>                 performGC
+>     runProxy $ runMaybeK $ evalStateK 100 $ recvS output >-> handler
+
+> -- work.hs
+> 
+> import Control.Concurrent
+> import Control.Monad
+> import Control.Proxy
+> import Control.Concurrent.Async
+> import Control.Proxy.Concurrent
+> 
+> worker :: (Proxy p, Show a) => Int -> () -> Consumer p a IO r
+> worker i () = runIdentityP $ forever $ do
+>     a <- request ()
+>     lift $ threadDelay 1000000  -- 1 second
+>     lift $ putStrLn $ "Worker #" ++ show i ++ ": Processed " ++ show a
+> {-
+> worker :: (Proxy p, Show a) => Int -> () -> Consumer p a IO ()
+> worker i () = runIdentityP $ replicateM_ 2 $ do
+>     a <- request ()
+>     lift $ threadDelay 1000000
+>     lift $ putStrLn $ "Worker #" ++ show i ++ ": Processed " ++ show a
+> -}
+>
+> user :: (Proxy p) => () -> Producer p String IO ()
+> user = stdinS >-> takeWhileD (/= "quit")
+> 
+> main = do
+>     (input, output) <- spawn Unbounded
+> --  (input, output) <- spawn Single
+> --  (input, output) <- spawn (Bounded 100)
+>     as <- forM [1..3] $ \i ->
+>           async $ do runProxy $ recvS output >-> worker i
+>                      performGC
+>     a  <- async $ do runProxy $ fromListS [1..10]      >-> sendD input
+> --  a  <- async $ do runProxy $ user                   >-> sendD input
+> --  a  <- async $ do runProxy $ enumFromS 1 >-> printD >-> sendD input
+>                      performGC
+>     mapM_ wait (a:as)
+
+> -- callback.hs
+> 
+> import Control.Proxy
+> import Control.Proxy.Concurrent
+> 
+> onLines' :: (Proxy p) => () -> Producer p String IO ()
+> onLines' () = runIdentityP $ do
+>     (input, output) <- lift $ spawn Single
+>     lift $ forkIO $ onLines (\str -> atomically $ send input str)
+>     recvS output ()
+> 
+> main = runProxy $ onLines' >-> takeWhileD (/= "quit) >-> stdoutD
+
 -}
